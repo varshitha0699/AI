@@ -1,689 +1,426 @@
-import sys
-import time
-name_identity = 1000
-def is_variable(term):
-        if term[0].isupper() or term.startswith('_'):
-            return True
+# Create a knowledge base consisting of first order logic statements and prove the given query using forward reasoning.
+import collections
+import itertools
+
+class Expr:
+    """A mathematical expression with an operator and 0 or more arguments."""
+
+    def __init__(self, op, *args):
+        self.op = str(op)
+        self.args = args
+
+    # Operator overloads
+    def __invert__(self):
+        return Expr('~', self)
+
+    def __and__(self, rhs):
+        return Expr('&', self, rhs)
+
+    def __or__(self, rhs):
+        """Allow both P | Q, and P |'==>'| Q."""
+        if isinstance(rhs, Expression):
+            return Expr('|', self, rhs)
         else:
-            return False
-class Term:
-    #Constant or variable
-    def __init__(self, term):
-        term = term.strip()
-        self.is_var = is_variable(term)
-        self.term = term
-    def __str__(self):
-        return str(self.term)
+            return PartialExpr(rhs, self)
 
-    def __eq__(self, cmp):
-        return self.is_var == cmp.is_var and self.term == cmp.term
+    # Reverse operator overloads
+    def __rand__(self, lhs):
+        return Expr('&', lhs, self)
 
+    def __ror__(self, lhs):
+        return Expr('|', lhs, self)
 
-class Statement:
-    def __init__(self, list_of_terms = [], predicate = '', negative = False):
-        self.list_of_terms = []
-        for term in list_of_terms:
-            self.list_of_terms.append(Term(term.term))
-        self.predicate = predicate
-        self.negative = negative
-    def negate(self):
-        return Statement(list_of_terms=self.list_of_terms, predicate=self.predicate, negative = not self.negative)
-    def add_new_term(self,term):
-        self.list_of_terms.append(term)
-    def simplify(self):
-        if len(self.list_of_terms)==1 and isinstance(self.list_of_terms[0],Conjunction):
-            self.list_of_terms = self.list_of_terms[0].list_of_statements
-    def __str__(self):
-        output = self.predicate + '('
-        for term in self.list_of_terms:
-            output += str(term) + ', '
-        output = output[:-2]+')'
-        return output
-    def __eq__(self, cmp):
-        equal = True
-        if len(self.list_of_terms)!=len(cmp.list_of_terms):
-            return False
+    def __call__(self, *args):
+        """Call: if 'f' is a Symbol, then f(0) == Expr('f', 0)."""
+        if self.args:
+            raise ValueError('Can only do a call for a Symbol, not an Expr')
         else:
-            for i in range(len(self.list_of_terms)):
-                if not self.list_of_terms[i] == cmp.list_of_terms[i]:
-                    equal = False
-                    break
-        return self.predicate == cmp.predicate and self.negative == cmp.negative and equal
-    def is_identical(self,cmp):
-        equal = True
-        if len(self.list_of_terms)!=len(cmp.list_of_terms):
-            return False
-        else:
-            for i in range(len(self.list_of_terms)):
-                if self.list_of_terms[i].is_var == False and cmp.list_of_terms[i].is_var == False \
-                and not self.list_of_terms[i] == cmp.list_of_terms[i]:
-                    equal = False
-                    break
-        return self.predicate == cmp.predicate and self.negative == cmp.negative and equal
-    def is_unificable(self,obj):
-        return self.predicate == obj.predicate and self.negative == obj.negative and \
-        len(self.list_of_terms) == len(obj.list_of_terms)
-    def is_opposite(self,obj):
-        return self.predicate == obj.predicate and self.negative != obj.negative and \
-        len(self.list_of_terms) == len(obj.list_of_terms)
-    def standardlize_variable(self,bind_dict = {}):
-        global name_identity
-        for index, term in enumerate(self.list_of_terms):
-            if term.is_var:
-                if not term.term in bind_dict:
-                    name_identity += 1
-                    bind_dict[term.term] = '_' + str(name_identity)
-                self.list_of_terms[index] = Term(term = bind_dict[term.term])
-        return bind_dict
-    def get_variable_list(self):
-        res = []
-        for term in self.list_of_terms:
-            if term.is_var:
-                res.append(term.term)
-        return res
-class Conjunction:
-    #Conjunction of statements
-    def __init__(self, list_of_statements = []):
-        self.list_of_statements = []
-        for statement in list_of_statements:
-            if isinstance(statement,Statement):
-                self.list_of_statements.append(Statement(predicate = statement.predicate,\
-                list_of_terms = statement.list_of_terms, negative = statement.negative))
-            elif isinstance(statement,Conjunction):
-                self.list_of_statements.append(Conjunction(statement.list_of_statements))
-            elif isinstance(statement,Disjunction):
-                self.list_of_statements.append(Disjunction(statement.list_of_statements))
-    def negate(self):
-        new_statements = []
-        for statement in self.list_of_statements:
-            new_statements.append(statement.negate())
-        return Disjunction(new_statements)
-    def add_new_statement(self, statement):
-        self.list_of_statements.append(statement)
-    def simplify(self):
-        index = 0
-        while index < len(self.list_of_statements):
-            if isinstance(self.list_of_statements[index],Conjunction):
-                self.list_of_statements[index].simplify()
-                l = len(self.list_of_statements[index].list_of_statements)
-                for i,statement in enumerate(self.list_of_statements[index].list_of_statements):
-                    self.list_of_statements.insert(index + i + 1,statement)
-                del self.list_of_statements[index]
-                index+=l-1
-            elif isinstance(self.list_of_statements[index],Disjunction):
-                self.list_of_statements[index].simplify()
-            index+=1
+            return Expr(self.op, *args)
 
-    def __str__(self):
-        output = '('
-        for statement in self.list_of_statements:
-            output+=str(statement)+' & '
-        return output[:-3]+')'
-    def __eq__(self,cmp):
-        if len(self.list_of_statements) != len(cmp.list_of_statements):
-            return False
-        else:
-            equal = True
-            for i in range(len(self.list_of_statements)):
-                if not self.list_of_statements[i] == cmp.list_of_statements[i]:
-                    equal = False
-                    break
-            return equal
-    def split(self):
-        list_of_new_con = []
-        has_dis = False
-        for index,statement in enumerate(self.list_of_statements):
-            if isinstance(statement,Disjunction):
-                has_dis = True
-                for statement_dis in statement.list_of_statements:
-                    new_list = self.list_of_statements.copy()
-                    new_list[index] = statement_dis
-                    new_conj = Conjunction(new_list)
-                    new_conj.simplify()
-                    list_of_new_con = list_of_new_con + new_conj.split()
-                break
-        if has_dis == False:
-            list_of_new_con.append(self)
-        return list_of_new_con
+    # Equality and repr
+    def __eq__(self, other):
+        """x == y' evaluates to True or False; does not build an Expr."""
+        return isinstance(other, Expr) and self.op == other.op and self.args == other.args
+
+    def __hash__(self):
+        return hash(self.op) ^ hash(self.args)
+
+    def __repr__(self):
+        op = self.op
+        args = [str(arg) for arg in self.args]
+        if op.isidentifier():  # f(x) or f(x, y)
+            return '{}({})'.format(op, ', '.join(args)) if args else op
+        elif len(args) == 1:  # -x or -(x + 1)
+            return op + args[0]
+        else:  # (x - y)
+            opp = (' ' + op + ' ')
+            return '(' + opp.join(args) + ')'
+
+# An 'Expression' is either an Expr or a Number.
+# Symbol is not an explicit type; it is any Expr with 0 args.
+Number = (int, float, complex)
+Expression = (Expr, Number)
+
+def Symbol(name):
+    """A Symbol is just an Expr with no args."""
+    return Expr(name)
+
+def subexpressions(x):
+    """Yield the subexpressions of an Expression (including x itself)."""
+    yield x
+    if isinstance(x, Expr):
+        for arg in x.args:
+            yield from subexpressions(arg)
+
+class PartialExpr:
+    """Given 'P |'==>'| Q, first form PartialExpr('==>', P), then combine with Q."""
+
+    def __init__(self, op, lhs):
+        self.op, self.lhs = op, lhs
+
+    def __or__(self, rhs):
+        return Expr(self.op, self.lhs, rhs)
+
+    def __repr__(self):
+        return "PartialExpr('{}', {})".format(self.op, self.lhs)
+
+def expr(x):
+    """Shortcut to create an Expression. x is a str in which:
+    - identifiers are automatically defined as Symbols.
+    - ==> is treated as an infix |'==>'|, as are <== and <=>.
+    If x is already an Expression, it is returned unchanged.
+    """
+    return eval(expr_handle_infix_ops(x), defaultkeydict(Symbol)) if isinstance(x, str) else x
+
+infix_ops = '==> <== <=>'.split()
+
+def expr_handle_infix_ops(x):
+    """Given a str, return a new str with ==> replaced by |'==>'|, etc."""
+    for op in infix_ops:
+        x = x.replace(op, '|' + repr(op) + '|')
+    return x
 
 
-class Disjunction:
-    #Disjunction of statements
-    def __init__(self, list_of_statements = []):
-        self.list_of_statements = []
-        for statement in list_of_statements:
-            if isinstance(statement,Statement):
-                self.list_of_statements.append(Statement(predicate = statement.predicate,\
-                list_of_terms = statement.list_of_terms, negative = statement.negative))
-            elif isinstance(statement,Conjunction):
-                self.list_of_statements.append(Conjunction(statement.list_of_statements))
-            elif isinstance(statement,Disjunction):
-                self.list_of_statements.append(Disjunction(statement.list_of_statements))
-    def negate(self):
-        new_statements = []
-        for statement in self.list_of_statements:
-            new_statements.append(statement.negate())
-        return Conjunction(new_statements)
-    def add_new_statement(self, statement):
-        self.list_of_statements.append(statement)
-    def __str__(self):
-        output = '('
-        for statement in self.list_of_statements:
-            output+=str(statement)+' ; '
-        return output[:-3]+')'
-    def simplify(self):
-        index = 0
-        while index < len(self.list_of_statements):
-            if isinstance(self.list_of_statements[index],Disjunction):
-                self.list_of_statements[index].simplify()
-                l = len(self.list_of_statements[index].list_of_statements)
-                for i,statement in enumerate(self.list_of_statements[index].list_of_statements):
-                    self.list_of_statements.insert(index + i + 1,statement)
-                del self.list_of_statements[index]
-                index+=l-1
-            elif isinstance(self.list_of_statements[index],Conjunction):
-                self.list_of_statements[index].simplify()
-            index+=1
-    def __eq__(self,cmp):
-        if len(self.list_of_statements) != len(cmp.list_of_statements):
-            return False
-        else:
-            equal = True
-            for i in range(len(self.list_of_statements)):
-                if not self.list_of_statements[i] == cmp.list_of_statements[i]:
-                    equal = False
-                    break
-            return equal
-class Rule:
-    #Define a rule with left and right hand side are Conjunction of statements
-    def __init__(self, lhs, rhs = None):
-        self.lhs = lhs
-        self.rhs = rhs
-        self.difference = []
-        self.supported = [[] for _ in range(len(rhs.list_of_statements))]
-    def __str__(self):
-        return str(self.lhs) + ' <- ' + str(self.rhs)
-    def split(self):
-        list_of_new_rules = []
-        new_conj = self.rhs.split()
-        for conj in new_conj:
-            list_of_new_rules.append(Rule(Statement(list_of_terms=self.lhs.list_of_terms,predicate = self.lhs.predicate, negative = self.lhs.negative),conj))
-        return list_of_new_rules
-    def get_supported_fact(self,list_of_facts):
-        for index in range(len(self.rhs.list_of_statements)):
-            for fact in list_of_facts:
-                if fact.is_unificable(self.rhs.list_of_statements[index]):
-                    self.supported[index].append(fact)
-    def standardlize_variable(self):
-        bind_dict = {}
-        bind_dict = self.lhs.standardlize_variable(bind_dict=bind_dict)
-        for statement in self.rhs.list_of_statements:
-            bind_dict = statement.standardlize_variable(bind_dict=bind_dict)
-        for difference in self.difference:
-            difference[0].term = bind_dict[difference[0].term]
-            difference[1].term = bind_dict[difference[1].term]
-    def list_supported_facts(self):
-        support_list = [[]]
-        for fact_list in self.supported:
-            if len(fact_list) == 0:
-                return []
+class defaultkeydict(collections.defaultdict):
+    """Like defaultdict, but the default_factory is a function of the key."""
+
+    def __missing__(self, key):
+        self[key] = result = self.default_factory(key)
+        return result
+
+def is_symbol(s):
+    """A string s is a symbol if it starts with an alphabetic char."""
+    return isinstance(s, str) and s[:1].isalpha()
+
+def is_var_symbol(s):
+    """A logic variable symbol is an initial-lowercase string."""
+    return is_symbol(s) and s[0].islower()
+
+def is_variable(x):
+    """A variable is an Expr with no args and a lowercase symbol as the op."""
+    return isinstance(x, Expr) and not x.args and x.op[0].islower()
+
+
+def variables(s):
+    """Return a set of the variables in expression s."""
+    return {x for x in subexpressions(s) if is_variable(x)}
+
+def is_prop_symbol(s):
+    """A proposition logic symbol is an initial-uppercase string.
+    >>> is_prop_symbol('exe')
+    False
+    """
+    return is_symbol(s) and s[0].isupper()
+
+def dissociate(op, args):
+    """Given an associative op, return a flattened list result such
+    that Expr(op, *result) means the same as Expr(op, *args)."""
+    result = []
+
+    def collect(subargs):
+        for arg in subargs:
+            if arg.op == op:
+                collect(arg.args)
             else:
-                new = []
-                for fact in fact_list:
-                    for sublist in support_list:
-                        new_sublist = []
-                        for statement in sublist:
-                            new_sublist.append(Statement(predicate= statement.predicate, negative = statement.negative,\
-                            list_of_terms = statement.list_of_terms))
-                        new_sublist.append(fact)
-                        new.append(new_sublist)
-                support_list = new
-        return support_list
-    def check_difference(self, binding):
-        differ = True
-        for difference in self.difference:
-            if binding.bind(difference[0]) == binding.bind(difference[1]):
-                differ = False
-                break
-        return differ
-    def eliminate_difference(self):
-        for index,statement in enumerate(self.rhs.list_of_statements):
-            if statement.predicate =='\=':
-                self.difference.append([Term(statement.list_of_terms[0].term),Term(statement.list_of_terms[1].term)])
-                del self.rhs.list_of_statements[index]
-                del self.supported[index]
+                result.append(arg)
 
+    collect(args)
+    return result
 
-def is_operator(c):
-    return c=='&' or c == ';'
-def is_higher_precedence(a,b):
-    return a == '&' and b == ';'
+def conjuncts(s):
+    """Return a list of the conjuncts in the sentence s."""
+    return dissociate('&', [s])
 
-#Change to Reverse Polish Notation
-def change_to_RPN(tokens):
-    operator_stack = []
-    output = []
-    for token in tokens:
-        if token == '(':
-            operator_stack.append(token)
-        elif token == ')':
-            operator = operator_stack.pop()
-            while operator != '(':
-                output.append(operator)
-                operator = operator_stack.pop()
-        elif is_operator(token):
-            while len(operator_stack)>0 and (operator_stack[-1].endswith('*') or \
-            is_higher_precedence(operator_stack[-1],token) or operator_stack[-1]==token) and (operator_stack[-1]!='('):
-                output.append(operator_stack.pop())
-            operator_stack.append(token)
-        else:
-            if token.endswith('*'):
-                operator_stack.append(token)
-            else:
-                output.append(token)
-    operator_stack.reverse()
-    output = output + operator_stack
-    return output
-
-#Process RPN and convert to conjunction
-def convert_to_conjunction(tokens):
-    stack = []
-    for token in tokens:
-        if token.endswith('*'):
-            operands = stack.pop()
-            operands = operands.term.split(',')
-            list_of_terms = []
-            for operand in operands:
-                list_of_terms.append(Term(operand))
-            statement = Statement(list_of_terms=list_of_terms,predicate=token[:-1])
-            stack.append(statement)
-        elif is_operator(token):
-            list_of_statements = []
-            list_of_statements.append(stack.pop())
-            list_of_statements.append(stack.pop())
-            list_of_statements.reverse()
-            new_operand = []
-            if token == '&':
-                new_operand = Conjunction(list_of_statements=list_of_statements)
-            elif token == ';':
-                new_operand = Disjunction(list_of_statements=list_of_statements)
-            stack.append(new_operand)
-        else:
-            stack.append(Term(token))
-    output = Conjunction([stack.pop()])
-    output.simplify()
-    return output
-
-def process_string(s):
-    #Turn string to list of tokens
-    tokens = []
-    name = ''
-    for ch in s:
-        if is_operator(ch) or ch == '(' or ch == ')':
-            if name!='':
-                if ch == '(':
-                    name += '*'
-                tokens.append(name)
-                name = ''
-            tokens.append(ch)
-        elif ch==' ':
-            continue
-        else:
-            name+=ch
-    rpn = change_to_RPN(tokens)
-    #print(rpn)
-    output_line = convert_to_conjunction(rpn)
-    return output_line
-
-class Binding:
-    def __init__(self):
-        self.binding_dict = {}
-        self.is_fail = False
-    def add_new_binding(self, key, value):
-        #Key and value is term
-        self.binding_dict[key.term] = value.term
-    def already_has(self, key):
-        return key.term in self.binding_dict
-    def bind(self,x):
-        if isinstance(x,Term):
-            if x.term in self.binding_dict:
-                return Term(self.binding_dict[x.term])
-            else:
-                return x
-        elif isinstance(x,Statement):
-            list_of_terms = []
-            for term in x.list_of_terms:
-                list_of_terms.append(self.bind(term))
-            return Statement(list_of_terms=list_of_terms,predicate=x.predicate, negative = x.negative)
-        elif isinstance(x,Conjunction):
-            list_of_statements = []
-            for statement in x.list_of_statements:
-                list_of_statements.append(self.bind(statement))
-            return Conjunction(list_of_statements=list_of_statements)
-        elif isinstance(x,Disjunction):
-            list_of_statements = []
-            for statement in x.list_of_statements:
-                list_of_statements.append(self.bind(statement))
-            return Disjunction(list_of_statements=list_of_statements)
-    def merge(self,obj):
-        res = Binding()
-        if self.is_fail or obj.is_fail:
-            res.is_fail = True
-        else:
-            is_fail = False
-            for key in self.binding_dict.keys():
-                term = self.binding_dict[key]
-                while is_variable(term) and term in self.binding_dict:
-                    term = self.binding_dict[term]
-                while is_variable(term) and term in obj.binding_dict:
-                    term = obj.binding_dict[term]
-                if key in res.binding_dict and term != res.binding_dict[key]:
-                    is_fail =True
-                    break
-                res.binding_dict[key] = term
-            for key in obj.binding_dict.keys():
-                term = obj.binding_dict[key]
-                while is_variable(term) and term in obj.binding_dict:
-                    term = obj.binding_dict[term]
-                while is_variable(term) and term in self.binding_dict:
-                    term = self.binding_dict[term]
-                if key in res.binding_dict and term != res.binding_dict[key]:
-                    is_fail =True
-                    break
-                res.binding_dict[key] = term
-            res.is_fail = is_fail
-        return res
-
-class ListOfBinding:
-    def __init__(self, binding_list = []):
-        if isinstance(binding_list,Binding):
-            binding_list = [binding_list]
-        self.binding_list = binding_list
-    def merge_or(self, obj):
-        if isinstance(obj,Binding):
-            obj = ListOfBinding(binding_list=[obj])
-        new_binding_list = []
-        for binding in self.binding_list:
-            if not binding.is_fail:
-                new_binding_list.append(binding)
-        for binding in obj.binding_list:
-            if not binding.is_fail:
-                new_binding_list.append(binding)
-        return ListOfBinding(new_binding_list)
-    def merge_and(self,obj):
-        if isinstance(obj,Binding):
-            obj = ListOfBinding(binding_list=[obj])
-        new_binding_list = []
-        for self_bind in self.binding_list:
-            for obj_bind in obj.binding_list:
-                if not self_bind.is_fail and not obj_bind.is_fail:
-                    new_bind = self_bind.merge(obj_bind)
-                    if not new_bind.is_fail:
-                        new_binding_list.append(new_bind)
-        return ListOfBinding(new_binding_list)
-
-class CNF:
-    def __init__(self, body, difference = []):
-        self.body = body
-        self.difference = difference
-    def standardlize_variable(self):
-        bind_dict = {}
-        for statement in self.body.list_of_statements:
-            bind_dict = statement.standardlize_variable(bind_dict=bind_dict)
-        for difference in self.difference:
-            difference[0].term = bind_dict[difference[0].term]
-            difference[1].term = bind_dict[difference[1].term]
-    def check_difference(self, binding):
-        differ = True
-        for difference in self.difference:
-            if binding.bind(difference[0]) == binding.bind(difference[1]):
-                differ = False
-                break
-        return differ
-
-def unify(x,y, binding):
-    if binding.is_fail:
-        return binding
-    elif x == y:
-        return binding
-    elif isinstance(x,Term) and x.is_var:
-        return unify_var(x,y,binding)
-    elif isinstance(y,Term) and y.is_var:
-        return unify_var(y,x,binding)
-    elif isinstance(x,Statement) and isinstance(y,Statement):
-        if x.is_unificable(y):
-            return unify(x.list_of_terms,y.list_of_terms,binding)
-    elif (isinstance(x,Conjunction) and isinstance(y,Conjunction)) or (isinstance(x,Disjunction) and isinstance(y,Disjunction)):
-        if len(x.list_of_statements)==len(y.list_of_statements):
-            return unify(x.list_of_statements,y.list_of_statements,binding)
-    elif isinstance(x,list) and isinstance(y,list):
-        if len(x) == len(y):
-            return unify(x[0],y[0],unify(x[1:],y[1:],binding))
-    binding.is_fail = True
-    return binding
-
-def unify_var(var,x,binding):
-    if binding.already_has(var):
-        return unify(binding.bind(var),x,binding)
-    elif binding.already_has(x):
-        return unify(var,binding.bind(x),binding)
+def is_definite_clause(s):
+    """Returns True for exprs s of the form A & B & ... & C ==> D,
+    where all literals are positive. In clause form, this is
+    ~A | ~B | ... | ~C | D, where exactly one clause is positive.
+    """
+    if is_symbol(s.op):
+        return True
+    elif s.op == '==>':
+        antecedent, consequent = s.args
+        return is_symbol(consequent.op) and all(is_symbol(arg.op) for arg in conjuncts(antecedent))
     else:
-        binding.add_new_binding(var,x)
-        return binding
-class KnowledgeBase:
-    #Knowledge Base with set of rules (facts are rules without right hand side)
-    def __init__(self):
-        self.list_of_rules = []
-        self.list_of_facts = []
-        self.list_of_query = []
-    def input_from_file(self, filename):
-        with open(filename,'r') as f:
-            for line in f:
-                line = line.strip()
-                if line.startswith('?-'):
-                    line = line[2:].strip()
-                    self.list_of_query.append(process_string(line).list_of_statements[0])
-                elif not line.startswith('%') and line != '':
-                    expr = line.split(':-')
-                    #print(expr[0])
-                    new_rule = None
-                    if len(expr) == 2:
-                        new_rule = Rule(process_string(expr[0]).list_of_statements[0], process_string(expr[1]))
-                        self.list_of_rules.append(new_rule)
-                    elif len(expr)==1:
-                        new_rule = process_string(expr[0]).list_of_statements[0]
-                        new_rule.standardlize_variable()
-                        self.list_of_facts.append(new_rule)
-        # Split rule
-        list_of_new_rule = []
-        for rule in self.list_of_rules:
-            list_of_new_rule = list_of_new_rule + rule.split()
-        self.list_of_rules = list_of_new_rule
-        # Get supported fact for each rule
-        for rule in self.list_of_rules:
-            rule.eliminate_difference()
-            rule.get_supported_fact(self.list_of_facts)
-            rule.standardlize_variable()
-
-    def __str__(self):
-        output = ''
-        for rule in self.list_of_rules:
-            output+= str(rule) + '\n'
-        for fact in self.list_of_facts:
-            output+= str(fact) + '\n'
-        return output
-    def forward_chaining(self,goal):
-        for fact in self.list_of_facts:
-            if fact.is_unificable(goal):
-                binding = Binding()
-                unify(fact,goal,binding)
-                if not binding.is_fail:
-                    return binding
-        while True:
-            new = []
-            for rule in self.list_of_rules:
-                supported_facts_list = rule.list_supported_facts()
-                if len(supported_facts_list)==0:
-                    continue
-                for fact_list in supported_facts_list:
-                    new_conj = Conjunction(fact_list)
-                    binding = Binding()
-                    unify(rule.rhs,new_conj,binding)
-                    if not binding.is_fail and rule.check_difference(binding):
-                        new_fact = binding.bind(rule.lhs)
-                        already_has = False
-                        for fact in new:
-                            if fact.is_identical(new_fact):
-                                already_has = True
-                                break
-                        if not already_has:
-                            for fact in knowledge_base.list_of_facts:
-                                if fact.is_identical(new_fact):
-                                    already_has = True
-                                    break
-                        if not already_has:
-                            new.append(new_fact)
-                            if goal.is_unificable(new_fact):
-                                goal_bind = Binding()
-                                unify(goal,new_fact,goal_bind)
-                                if not goal_bind.is_fail:
-                                    return goal_bind
-            self.list_of_facts += new
-            for rule in self.list_of_rules:
-                rule.get_supported_fact(new)
-            if len(new)==0:
-                break
         return False
-    # Backward chaining
-    def backward_chaining_ask(self,goal):
-        return self.backward_chaining_or(goal)
-    def backward_chaining_or(self,goal):
-        binding_list = ListOfBinding([])
-        for fact in self.list_of_facts:
-            if fact.is_unificable(goal):
-                binding = Binding()
-                unify(fact,goal,binding)
-                if not binding.is_fail:
-                    binding_list.binding_list.append(binding)
-        for rule in self.list_of_rules:
-            if rule.lhs.is_unificable(goal):
-                binding = Binding()
-                unify(rule.lhs, goal, binding)
-                if not binding.is_fail:
-                    binding_list = binding_list.merge_or(self.backward_chaining_and(rule,binding))
-        return binding_list
-    def backward_chaining_and(self, rule, binding_rhs):
-        binding_list = ListOfBinding([binding_rhs])
-        new_rule = binding_rhs.bind(rule.rhs)
-        for goal in new_rule.list_of_statements:
-            or_binding = self.backward_chaining_or(goal)
-            var_list = goal.get_variable_list()
-            for binding in or_binding.binding_list:
-                new_dict = {}
-                for key in binding.binding_dict.keys():
-                    if key in var_list:
-                        new_dict[key] = binding.binding_dict[key]
-                binding.binding_dict = new_dict
-            binding_list = binding_list.merge_and(or_binding)
-        for binding in binding_list.binding_list:
-            if (not rule.check_difference(binding)) or binding.is_fail:
-                binding_list.binding_list.remove(binding)
-        return binding_list
-    def resolution(self):
-        list_of_cnfs = []
-        binding_query = []
-        for fact in self.list_of_facts:
-            list_of_cnfs.append(CNF(Disjunction([fact])))
-        for rule in self.list_of_rules:
-            new_dis = rule.rhs.negate()
-            new_dis.list_of_statements.append(rule.lhs)
-            list_of_cnfs.append(CNF(new_dis,rule.difference))
-        for query in self.list_of_query:
-            binding = self.resolution_step(list_of_cnfs, Disjunction([query.negate()]))
-            binding_query.append(binding)
-        return binding_query
-    def resolution_step(self,list_of_cnfs,goal):
-        list_of_binding = ListOfBinding()
-        if len(goal.list_of_statements) == 0:
-            list_of_binding = ListOfBinding(Binding())
-            return list_of_binding
-        goal_list = goal.list_of_statements
-        for cnf in list_of_cnfs:
-            cnf.standardlize_variable()
-            cnf_list = cnf.body.list_of_statements
-            subgoal = goal_list[0]
-
-            for statement in cnf_list:
-                if statement.is_opposite(subgoal):
-                    binding = Binding()
-                    unify(statement.negate(),subgoal,binding)
-                    if not binding.is_fail:
-                        difference = []
-                        for differ in cnf.difference:
-                            difference.append([Term(differ[0].term),Term(differ[1].term)])
-                        new_binding = ListOfBinding(binding)
-                        new_list_of_statements = goal_list[1:] + [x for x in cnf_list if not x == statement]
-                        new_dis = Disjunction(new_list_of_statements)
-                        new_dis = binding.bind(new_dis)
-                        subgoal_bind = new_binding.merge_and(self.resolution_step(list_of_cnfs,new_dis))
-                        # Check difference
-                        for bind in subgoal_bind.binding_list:
-                            differ = True
-                            for pair in difference:
-                                if bind.bind(pair[0]) == bind.bind(pair[1]):
-                                    differ = False
-                                    break
-                            if not differ:
-                                subgoal_bind.binding_list.remove(bind)
-                        list_of_binding = list_of_binding.merge_or(subgoal_bind)
-        return list_of_binding
 
 
-
-
-
-knowledge_base = KnowledgeBase()
-knowledge_base.input_from_file('input.txt')
-# print(str(knowledge_base))
-start = time.time()
-
-# # Forward chaining
-for query in knowledge_base.list_of_query:
-    print('?- ' + str(query))
-    binding = knowledge_base.forward_chaining(query)
-    if binding == False:
-        print('False')
+def parse_definite_clause(s):
+    """Return the antecedents and the consequent of a definite clause."""
+    assert is_definite_clause(s)
+    if is_symbol(s.op):
+        return [], s
     else:
-        for term in query.list_of_terms:
-            if term.is_var:
-                print(term.term + ' = ' + binding.binding_dict[term.term])
-        print('True')
+        antecedent, consequent = s.args
+        return conjuncts(antecedent), consequent
 
-# # Backward chaining
-#for query in knowledge_base.list_of_query:
-#    print('?- ' + str(query))
-#    binding_list = knowledge_base.backward_chaining_ask(query)
-#    is_fail = True
-#    for binding in binding_list.binding_list:
-#        if binding.is_fail == False:
-#            is_fail = False
-#            for term in query.list_of_terms:
-#                if term.is_var:
-#                    print(term.term + ' = ' + binding.binding_dict[term.term])
-#    print(not is_fail)
 
-# Resolution
-# query_binding = knowledge_base.resolution()
-# for index in range(len(knowledge_base.list_of_query)):
-#     print('?- ' + str(knowledge_base.list_of_query[index]))
-#     list_of_binding = query_binding[index]
-#     is_fail = True
-#     for binding in list_of_binding.binding_list:
-#         if not binding.is_fail:
-#             is_fail = False
-#             for term in knowledge_base.list_of_query[index].list_of_terms:
-#                 if term.is_var:
-#                     print(term.term + ' = ' + binding.binding_dict[term.term])
-#     print(not is_fail)
-end = time.time()
-print(str(end - start))
+def constant_symbols(x):
+    """Return the set of all constant symbols in x."""
+    if not isinstance(x, Expr):
+        return set()
+    elif is_prop_symbol(x.op) and not x.args:
+        return {x}
+    else:
+        return {symbol for arg in x.args for symbol in constant_symbols(arg)}
+
+def occur_check(var, x, s):
+    """Return true if variable var occurs anywhere in x
+    (or in subst(s, x), if s has a binding for x)."""
+    if var == x:
+        return True
+    elif is_variable(x) and x in s:
+        return occur_check(var, s[x], s)
+    elif isinstance(x, Expr):
+        return (occur_check(var, x.op, s) or
+                occur_check(var, x.args, s))
+    elif isinstance(x, (list, tuple)):
+        return first(e for e in x if occur_check(var, e, s))
+    else:
+        return False
+
+def subst(s, x):
+    """Substitute the substitution s into the expression x.
+    >>> subst({x: 42, y:0}, F(x) + y)
+    (F(42) + 0)
+    """
+    if isinstance(x, list):
+        return [subst(s, xi) for xi in x]
+    elif isinstance(x, tuple):
+        return tuple([subst(s, xi) for xi in x])
+    elif not isinstance(x, Expr):
+        return x
+    elif is_var_symbol(x.op):
+        return s.get(x, x)
+    else:
+        return Expr(x.op, *[subst(s, arg) for arg in x.args])
+
+def unify_mm(x, y, s={}):
+    """Unify expressions x,y with substitution s using an efficient rule-based
+    unification algorithm by Martelli & Montanari; return a substitution that
+    would make x,y equal, or None if x,y can not unify. x and y can be
+    variables (e.g. Expr('x')), constants, lists, or Exprs.
+    """
+
+    set_eq = extend(s, x, y)
+    s = set_eq.copy()
+    while True:
+        trans = 0
+        for x, y in set_eq.items():
+            if x == y:
+                # if x = y this mapping is deleted (rule b)
+                del s[x]
+            elif not is_variable(x) and is_variable(y):
+                # if x is not a variable and y is a variable, rewrite it as y = x in s (rule a)
+                if s.get(y, None) is None:
+                    s[y] = x
+                    del s[x]
+                else:
+                    # if a mapping already exist for variable y then apply
+                    # variable elimination (there is a chance to apply rule d)
+                    s[x] = vars_elimination(y, s)
+            elif not is_variable(x) and not is_variable(y):
+                # in which case x and y are not variables, if the two root function symbols
+                # are different, stop with failure, else apply term reduction (rule c)
+                if x.op is y.op and len(x.args) == len(y.args):
+                    term_reduction(x, y, s)
+                    del s[x]
+                else:
+                    return None
+            elif isinstance(y, Expr):
+                # in which case x is a variable and y is a function or a variable (e.g. F(z) or y),
+                # if y is a function, we must check if x occurs in y, then stop with failure, else
+                # try to apply variable elimination to y (rule d)
+                if occur_check(x, y, s):
+                    return None
+                s[x] = vars_elimination(y, s)
+                if y == s.get(x):
+                    trans += 1
+            else:
+                trans += 1
+        if trans == len(set_eq):
+            # if no transformation has been applied, stop with success
+            return s
+        set_eq = s.copy()
+
+
+def term_reduction(x, y, s):
+    """Apply term reduction to x and y if both are functions and the two root function
+    symbols are equals (e.g. F(x1, x2, ..., xn) and F(x1', x2', ..., xn')) by returning
+    a new mapping obtained by replacing x: y with {x1: x1', x2: x2', ..., xn: xn'}
+    """
+    for i in range(len(x.args)):
+        if x.args[i] in s:
+            s[s.get(x.args[i])] = y.args[i]
+        else:
+            s[x.args[i]] = y.args[i]
+
+def vars_elimination(x, s):
+    """Apply variable elimination to x: if x is a variable and occurs in s, return
+    the term mapped by x, else if x is a function recursively applies variable
+    elimination to each term of the function."""
+    if not isinstance(x, Expr):
+        return x
+    if is_variable(x):
+        return s.get(x, x)
+    return Expr(x.op, *[vars_elimination(arg, s) for arg in x.args])
+
+def first(iterable, default=None):
+    """Return the first element of an iterable; or default."""
+    return next(iter(iterable), default)
+
+def extend(s, var, val):
+    """Copy dict s and extend it by setting var to val; return copy."""
+    try:  # Python 3.5 and later
+        return eval('{**s, var: val}')
+    except SyntaxError:  # Python 3.4
+        s2 = s.copy()
+        s2[var] = val
+        return s2
+
+class KB:
+    """A knowledge base to which you can tell and ask sentences."""
+
+    def __init__(self, sentence=None):
+        if sentence:
+            self.tell(sentence)
+
+    def tell(self, sentence):
+        """Add the sentence to the KB."""
+        raise NotImplementedError
+
+    def ask(self, query):
+        """Return a substitution that makes the query true, or, failing that, return False."""
+        return first(self.ask_generator(query), default=False)
+
+    def ask_generator(self, query):
+        """Yield all the substitutions that make query true."""
+        raise NotImplementedError
+
+    def retract(self, sentence):
+        """Remove sentence from the KB."""
+        raise NotImplementedError
+
+
+class FolKB(KB):
+    """A knowledge base consisting of first-order definite clauses."""
+
+    def __init__(self, clauses=None):
+        super().__init__()
+        self.clauses = []  # inefficient: no indexing
+        if clauses:
+            for clause in clauses:
+                self.tell(clause)
+
+    def tell(self, sentence):
+        if is_definite_clause(sentence):
+            self.clauses.append(sentence)
+        else:
+            raise Exception('Not a definite clause: {}'.format(sentence))
+
+    def ask_generator(self, query):
+        return fol_fc_ask(self, query)
+
+    def retract(self, sentence):
+        self.clauses.remove(sentence)
+
+    def fetch_rules_for_goal(self, goal):
+        return self.clauses
+
+
+def fol_fc_ask(kb, alpha):
+    """
+    A simple forward-chaining algorithm.
+    """
+    # TODO: improve efficiency
+    kb_consts = list({c for clause in kb.clauses for c in constant_symbols(clause)})
+
+    def enum_subst(p):
+        query_vars = list({v for clause in p for v in variables(clause)})
+        for assignment_list in itertools.product(kb_consts, repeat=len(query_vars)):
+            theta = {x: y for x, y in zip(query_vars, assignment_list)}
+            yield theta
+
+    # check if we can answer without new inferences
+    for q in kb.clauses:
+        phi = unify_mm(q, alpha)
+        if phi is not None:
+            yield phi
+
+    while True:
+        new = []
+        for rule in kb.clauses:
+            p, q = parse_definite_clause(rule)
+            for theta in enum_subst(p):
+                if set(subst(theta, p)).issubset(set(kb.clauses)):
+                    q_ = subst(theta, q)
+                    if all([unify_mm(x, q_) is None for x in kb.clauses + new]):
+                        new.append(q_)
+                        phi = unify_mm(q_, alpha)
+                        if phi is not None:
+                            yield phi
+        if not new:
+            break
+        for clause in new:
+            kb.tell(clause)
+    return None
+
+
+
+
+# The main entry point for this module
+def main():
+
+    # Create an array to hold clauses
+    clauses = []
+
+    # Add first-order logic clauses (rules and fact)
+    clauses.append(expr("(American(x) & Weapon(y) & Sells(x, y, z) & Hostile(z)) ==> Criminal(x)"))
+    clauses.append(expr("Enemy(Nono, America)"))
+    clauses.append(expr("Owns(Nono, M1)"))
+    clauses.append(expr("Missile(M1)"))
+    clauses.append(expr("(Missile(x) & Owns(Nono, x)) ==> Sells(West, x, Nono)"))
+    clauses.append(expr("American(West)"))
+    clauses.append(expr("Missile(x) ==> Weapon(x)"))
+
+    # Create a first-order logic knowledge base (KB) with clauses
+    KB = FolKB(clauses)
+
+    # Add rules and facts with tell
+    KB.tell(expr('Enemy(Coco, America)'))
+    KB.tell(expr('Enemy(Jojo, America)'))
+    KB.tell(expr("Enemy(x, America) ==> Hostile(x)"))
+
+    # Get information from the knowledge base with ask
+    hostile = KB.ask(expr('Hostile(x)'))
+    criminal = KB.ask(expr('Criminal(x)'))
+
+    # Print answers
+    print('Hostile?')
+    print(hostile)
+    print('\nCriminal?')
+    print(criminal)
+    print()
+
+# Tell python to run main method
+if __name__ == "__main__": main()
